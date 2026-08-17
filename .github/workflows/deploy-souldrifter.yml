@@ -1,11 +1,13 @@
 name: Deploy SoulDrifter
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       source_ref:
         description: The-Nexus branch, tag, or commit to deploy
-        required: true
+        required: false
         default: main
 
 permissions:
@@ -22,12 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
+      should_deploy: ${{ steps.freshness.outputs.should_deploy }}
     steps:
       - name: Check out SoulDrifter source
         uses: actions/checkout@v7
         with:
           repository: The-Nexus-Decoded/The-Nexus
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || 'main' }}
           path: source
           persist-credentials: false
 
@@ -41,43 +44,76 @@ jobs:
         shell: bash
         run: echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Compare current public release
+        id: freshness
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            merged_to_main="$(curl --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/The-Nexus-Decoded/The-Nexus/commits/$SOURCE_SHA/pulls" \
+              | node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => { try { const prs = JSON.parse(s); process.stdout.write(Array.isArray(prs) && prs.some(pr => pr.merged_at && pr.base?.ref === "main") ? "true" : "false"); } catch { process.stdout.write("false"); } });')"
+            if [[ "$merged_to_main" != "true" ]]; then
+              echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          live_sha="$(curl --silent --show-error https://the-nexus-decoded.github.io/release.json 2>/dev/null \
+            | node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => { try { process.stdout.write(JSON.parse(s).sourceCommit ?? ""); } catch {} });')"
+          if [[ "$live_sha" == "$SOURCE_SHA" ]]; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable Yarn 1
+        if: steps.freshness.outputs.should_deploy == 'true'
         shell: bash
         run: |
           corepack enable
           corepack prepare yarn@1.22.22 --activate
 
       - name: Install dependencies
+        if: steps.freshness.outputs.should_deploy == 'true'
         working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
         run: yarn install --non-interactive --no-progress
 
       - name: Run tests
+        if: steps.freshness.outputs.should_deploy == 'true'
         working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
         run: yarn test
 
       - name: Type-check
+        if: steps.freshness.outputs.should_deploy == 'true'
         working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
         run: yarn typecheck
 
       - name: Build both release artifacts
+        if: steps.freshness.outputs.should_deploy == 'true'
         working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
         env:
           SOULDRIFTER_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
         run: yarn build
 
       - name: Verify target separation and provenance
+        if: steps.freshness.outputs.should_deploy == 'true'
         working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
         run: yarn verify:release
 
       - name: Configure GitHub Pages
+        if: steps.freshness.outputs.should_deploy == 'true'
         uses: actions/configure-pages@v6
 
       - name: Upload public Pages artifact
+        if: steps.freshness.outputs.should_deploy == 'true'
         uses: actions/upload-pages-artifact@v5
         with:
           path: source/Arianus-Sky/projects/games/SoulDrifterWeb/dist-pages
 
   deploy:
+    if: needs.build.outputs.should_deploy == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
