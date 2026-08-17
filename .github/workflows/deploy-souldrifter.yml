@@ -1,0 +1,89 @@
+name: Deploy SoulDrifter
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: The-Nexus branch, tag, or commit to deploy
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Check out SoulDrifter source
+        uses: actions/checkout@v7
+        with:
+          repository: The-Nexus-Decoded/The-Nexus
+          ref: ${{ inputs.source_ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Resolve source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Enable Yarn 1
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install dependencies
+        working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
+        run: yarn install --non-interactive --no-progress
+
+      - name: Run tests
+        working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
+        run: yarn test
+
+      - name: Type-check
+        working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
+        run: yarn typecheck
+
+      - name: Build both release artifacts
+        working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
+        env:
+          SOULDRIFTER_SOURCE_COMMIT: ${{ steps.source.outputs.sha }}
+        run: yarn build
+
+      - name: Verify target separation and provenance
+        working-directory: source/Arianus-Sky/projects/games/SoulDrifterWeb
+        run: yarn verify:release
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload public Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: source/Arianus-Sky/projects/games/SoulDrifterWeb/dist-pages
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy public Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v5
