@@ -19,6 +19,11 @@ concurrency:
   group: github-pages
   cancel-in-progress: false
 
+env:
+  # Installation baseline. Scheduled publication begins with the next reviewed
+  # The-Nexus main merge; manual rollback dispatches may still select this SHA.
+  SOULDRIFTER_AUTOMATION_BASELINE: cc89f9f01f8d5c268f36b7dd58cee951b11873db
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,6 +56,10 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            if [[ "$SOURCE_SHA" == "$SOULDRIFTER_AUTOMATION_BASELINE" ]]; then
+              echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             merged_to_main="$(curl --silent --show-error \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/The-Nexus-Decoded/The-Nexus/commits/$SOURCE_SHA/pulls" \
